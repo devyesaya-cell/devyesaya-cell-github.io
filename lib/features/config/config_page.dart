@@ -32,6 +32,14 @@ class _ConfigPageState extends ConsumerState<ConfigPage> {
   int _currentPage = 0;
   static const int _pageSize = 25;
 
+  // Table Filter States
+  DateTime? _selectedSingleDate;
+  DateTimeRange? _selectedDateRange;
+  double? _minWidth;
+  double? _maxWidth;
+  double? _minDepth;
+  double? _maxDepth;
+
   @override
   void initState() {
     super.initState();
@@ -634,15 +642,73 @@ class _ConfigPageState extends ConsumerState<ConfigPage> {
   Widget _buildDataTableCard(
       List<Spot> allSpots, bool isCrumbling, SpotConfig config) {
     final query = _tableSearchController.text.trim().toLowerCase();
-    final filtered = query.isEmpty
-        ? allSpots
-        : allSpots.where((s) {
-            return s.id.toString().contains(query) ||
-                s.uid.toLowerCase().contains(query) ||
-                (s.pointIndex?.toString().contains(query) ?? false) ||
-                (s.spotId?.toString().contains(query) ?? false) ||
-                (s.operatorId?.contains(query) ?? false);
-          }).toList();
+    final depthUnit = isCrumbling ? 'cm' : 'm';
+
+    // Comprehensive Filtering Logic
+    final filtered = allSpots.where((s) {
+      // 1. Text Search Filter
+      if (query.isNotEmpty) {
+        final matchesQuery = s.id.toString().contains(query) ||
+            s.uid.toLowerCase().contains(query) ||
+            (s.pointIndex?.toString().contains(query) ?? false) ||
+            (s.spotId?.toString().contains(query) ?? false) ||
+            (s.operatorId?.toLowerCase().contains(query) ?? false) ||
+            (s.operatorName?.toLowerCase().contains(query) ?? false);
+        if (!matchesQuery) return false;
+      }
+
+      // 2. Date Filter (Single date or Date range)
+      if (_selectedSingleDate != null) {
+        final d = s.completedAt ?? s.timestamp ?? s.createdAt;
+        if (d == null) return false;
+        final local = d.toLocal();
+        final matchLocal = local.year == _selectedSingleDate!.year &&
+            local.month == _selectedSingleDate!.month &&
+            local.day == _selectedSingleDate!.day;
+        final matchUtc = d.year == _selectedSingleDate!.year &&
+            d.month == _selectedSingleDate!.month &&
+            d.day == _selectedSingleDate!.day;
+        if (!matchLocal && !matchUtc) return false;
+      } else if (_selectedDateRange != null) {
+        final d = s.completedAt ?? s.timestamp ?? s.createdAt;
+        if (d == null) return false;
+        final local = d.toLocal();
+        final startDay = DateTime(_selectedDateRange!.start.year,
+            _selectedDateRange!.start.month, _selectedDateRange!.start.day);
+        final endDay = DateTime(_selectedDateRange!.end.year,
+            _selectedDateRange!.end.month, _selectedDateRange!.end.day);
+        final spotDayLocal = DateTime(local.year, local.month, local.day);
+        final spotDayUtc = DateTime(d.year, d.month, d.day);
+        final matchLocal =
+            !spotDayLocal.isBefore(startDay) && !spotDayLocal.isAfter(endDay);
+        final matchUtc =
+            !spotDayUtc.isBefore(startDay) && !spotDayUtc.isAfter(endDay);
+        if (!matchLocal && !matchUtc) return false;
+      }
+
+      // 3. Lebar (Width) Filter Range
+      if (_minWidth != null || _maxWidth != null) {
+        final w = _getSpotWidth(s);
+        if (w == null) return false;
+        if (_minWidth != null && w < _minWidth!) return false;
+        if (_maxWidth != null && w > _maxWidth!) return false;
+      }
+
+      // 4. Depth (Kedalaman) Filter Range
+      if (_minDepth != null || _maxDepth != null) {
+        final d = _getSpotDepth(s, isCrumbling);
+        if (d == null) return false;
+        if (_minDepth != null && d < _minDepth!) return false;
+        if (_maxDepth != null && d > _maxDepth!) return false;
+      }
+
+      return true;
+    }).toList();
+
+    final isDateFiltered = _selectedSingleDate != null || _selectedDateRange != null;
+    final isWidthFiltered = _minWidth != null || _maxWidth != null;
+    final isDepthFiltered = _minDepth != null || _maxDepth != null;
+    final hasActiveFilters = isDateFiltered || isWidthFiltered || isDepthFiltered || query.isNotEmpty;
 
     final totalPages = (filtered.length / _pageSize).ceil();
     final start = _currentPage * _pageSize;
@@ -664,6 +730,7 @@ class _ConfigPageState extends ConsumerState<ConfigPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header Row
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -683,42 +750,66 @@ class _ConfigPageState extends ConsumerState<ConfigPage> {
                   ),
                 ],
               ),
-              // Search in table
-              SizedBox(
-                width: 260,
-                height: 36,
-                child: TextField(
-                  controller: _tableSearchController,
-                  style: const TextStyle(fontSize: 12),
-                  decoration: InputDecoration(
-                    hintText: 'Cari ID, Spot ID, Operator...',
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    prefixIcon: const Icon(Icons.search, size: 16),
-                    suffixIcon: query.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear, size: 14),
-                            onPressed: () {
-                              _tableSearchController.clear();
-                              setState(() => _currentPage = 0);
-                            },
-                          )
-                        : null,
+              if (filtered.length != allSpots.length)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.accentCyan.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: AppColors.accentCyan.withValues(alpha: 0.35)),
                   ),
-                  onChanged: (_) => setState(() => _currentPage = 0),
+                  child: Text(
+                    'Difilter dari ${allSpots.length} total',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.accentCyan,
+                    ),
+                  ),
                 ),
-              ),
             ],
           ),
           const SizedBox(height: 16),
 
-          // Table
+          // Dedicated SCADA Filter Toolbar
+          _buildFilterToolbar(
+            context: context,
+            allSpots: allSpots,
+            isCrumbling: isCrumbling,
+            config: config,
+            query: query,
+            depthUnit: depthUnit,
+            isDateFiltered: isDateFiltered,
+            isWidthFiltered: isWidthFiltered,
+            isDepthFiltered: isDepthFiltered,
+            hasActiveFilters: hasActiveFilters,
+          ),
+          const SizedBox(height: 16),
+
+          // Table Content or Empty State
           if (pageSpots.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 30),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 36),
               child: Center(
-                child: Text('Tidak ada data yang cocok.',
-                    style: TextStyle(color: AppColors.textMuted)),
+                child: Column(
+                  children: [
+                    const Icon(Icons.filter_alt_off,
+                        size: 40, color: AppColors.textMuted),
+                    const SizedBox(height: 10),
+                    const Text('Tidak ada data yang cocok dengan kriteria filter.',
+                        style: TextStyle(
+                            color: AppColors.textSecondary, fontSize: 13)),
+                    if (hasActiveFilters) ...[
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        onPressed: _resetAllFilters,
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('Reset Semua Filter'),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             )
           else
@@ -833,7 +924,9 @@ class _ConfigPageState extends ConsumerState<ConfigPage> {
                             '${((spot.sweepProgress ?? 1.0) * 100).toStringAsFixed(0)}%')),
                         DataCell(Text(spot.completedAt != null
                             ? dateFormat.format(spot.completedAt!)
-                            : '-')),
+                            : (spot.timestamp != null
+                                ? dateFormat.format(spot.timestamp!)
+                                : '-'))),
                         DataCell(Text(spot.operatorName ?? spot.operatorId ?? '-')),
                       ],
                     );
@@ -901,6 +994,832 @@ class _ConfigPageState extends ConsumerState<ConfigPage> {
     );
   }
 
+  Widget _buildFilterToolbar({
+    required BuildContext context,
+    required List<Spot> allSpots,
+    required bool isCrumbling,
+    required SpotConfig config,
+    required String query,
+    required String depthUnit,
+    required bool isDateFiltered,
+    required bool isWidthFiltered,
+    required bool isDepthFiltered,
+    required bool hasActiveFilters,
+  }) {
+    String dateLabel = 'Filter Tanggal';
+    if (_selectedSingleDate != null) {
+      dateLabel = DateFormat('dd MMM yyyy').format(_selectedSingleDate!);
+    } else if (_selectedDateRange != null) {
+      dateLabel =
+          '${DateFormat('dd MMM').format(_selectedDateRange!.start)} - ${DateFormat('dd MMM yyyy').format(_selectedDateRange!.end)}';
+    }
+
+    final widthLabel = isWidthFiltered
+        ? 'Lebar: ${_formatRangeText(_minWidth, _maxWidth, 'cm')}'
+        : 'Filter Lebar';
+
+    final depthLabel = isDepthFiltered
+        ? 'Kedalaman: ${_formatRangeText(_minDepth, _maxDepth, depthUnit)}'
+        : 'Filter Kedalaman';
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceElevated,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Filter Controls Row
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              // 1. Search Box
+              SizedBox(
+                width: 250,
+                height: 38,
+                child: TextField(
+                  controller: _tableSearchController,
+                  style: const TextStyle(fontSize: 12),
+                  decoration: InputDecoration(
+                    hintText: 'Cari ID, Spot ID, Operator...',
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    prefixIcon: const Icon(Icons.search, size: 16),
+                    suffixIcon: query.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 14),
+                            onPressed: () {
+                              _tableSearchController.clear();
+                              setState(() => _currentPage = 0);
+                            },
+                          )
+                        : null,
+                  ),
+                  onChanged: (_) => setState(() => _currentPage = 0),
+                ),
+              ),
+
+              // 2. Date Filter Button (Single & Range)
+              OutlinedButton.icon(
+                onPressed: () => _showDateFilterDialog(context, allSpots),
+                icon: Icon(
+                  isDateFiltered ? Icons.event_available : Icons.calendar_today_outlined,
+                  size: 16,
+                  color: isDateFiltered ? AppColors.accentCyan : AppColors.textSecondary,
+                ),
+                label: Text(
+                  dateLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: isDateFiltered ? FontWeight.bold : FontWeight.normal,
+                    color: isDateFiltered ? AppColors.accentCyan : AppColors.textPrimary,
+                  ),
+                ),
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: isDateFiltered
+                      ? AppColors.accentCyan.withValues(alpha: 0.12)
+                      : AppColors.surfaceCard,
+                  side: BorderSide(
+                    color: isDateFiltered ? AppColors.accentCyan : AppColors.border,
+                  ),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+              ),
+
+              // 3. Lebar (Width Range) Button
+              OutlinedButton.icon(
+                onPressed: () => _showWidthFilterDialog(context, allSpots),
+                icon: Icon(
+                  Icons.straighten,
+                  size: 16,
+                  color: isWidthFiltered
+                      ? const Color(0xFF3B82F6)
+                      : AppColors.textSecondary,
+                ),
+                label: Text(
+                  widthLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: isWidthFiltered ? FontWeight.bold : FontWeight.normal,
+                    color: isWidthFiltered
+                        ? const Color(0xFF3B82F6)
+                        : AppColors.textPrimary,
+                  ),
+                ),
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: isWidthFiltered
+                      ? const Color(0xFF3B82F6).withValues(alpha: 0.12)
+                      : AppColors.surfaceCard,
+                  side: BorderSide(
+                    color: isWidthFiltered
+                        ? const Color(0xFF3B82F6)
+                        : AppColors.border,
+                  ),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+              ),
+
+              // 4. Depth (Kedalaman Range) Button
+              OutlinedButton.icon(
+                onPressed: () =>
+                    _showDepthFilterDialog(context, allSpots, isCrumbling, config),
+                icon: Icon(
+                  Icons.vertical_align_bottom,
+                  size: 16,
+                  color: isDepthFiltered
+                      ? const Color(0xFFF59E0B)
+                      : AppColors.textSecondary,
+                ),
+                label: Text(
+                  depthLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: isDepthFiltered ? FontWeight.bold : FontWeight.normal,
+                    color: isDepthFiltered
+                        ? const Color(0xFFF59E0B)
+                        : AppColors.textPrimary,
+                  ),
+                ),
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: isDepthFiltered
+                      ? const Color(0xFFF59E0B).withValues(alpha: 0.12)
+                      : AppColors.surfaceCard,
+                  side: BorderSide(
+                    color: isDepthFiltered
+                        ? const Color(0xFFF59E0B)
+                        : AppColors.border,
+                  ),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+              ),
+
+              // 5. Reset All Filter Button
+              if (hasActiveFilters)
+                OutlinedButton.icon(
+                  onPressed: _resetAllFilters,
+                  icon: const Icon(Icons.refresh,
+                      size: 16, color: AppColors.statusError),
+                  label: const Text('Reset Filter',
+                      style: TextStyle(
+                          color: AppColors.statusError, fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.statusError),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 10),
+                  ),
+                ),
+            ],
+          ),
+
+          // Active Filter Chips Row
+          if (hasActiveFilters) ...[
+            const SizedBox(height: 12),
+            const Divider(color: AppColors.border, height: 1),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text(
+                  'Filter Aktif: ',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                if (_selectedSingleDate != null)
+                  _buildFilterBadge(
+                    icon: Icons.calendar_today,
+                    label: DateFormat('dd MMM yyyy').format(_selectedSingleDate!),
+                    color: AppColors.accentCyan,
+                    onRemove: () => setState(() {
+                      _selectedSingleDate = null;
+                      _currentPage = 0;
+                    }),
+                    onTap: () => _showDateFilterDialog(context, allSpots),
+                  ),
+                if (_selectedDateRange != null)
+                  _buildFilterBadge(
+                    icon: Icons.date_range,
+                    label:
+                        '${DateFormat('dd MMM').format(_selectedDateRange!.start)} - ${DateFormat('dd MMM yyyy').format(_selectedDateRange!.end)}',
+                    color: AppColors.accentCyan,
+                    onRemove: () => setState(() {
+                      _selectedDateRange = null;
+                      _currentPage = 0;
+                    }),
+                    onTap: () => _showDateFilterDialog(context, allSpots),
+                  ),
+                if (isWidthFiltered)
+                  _buildFilterBadge(
+                    icon: Icons.straighten,
+                    label: 'Lebar: ${_formatRangeText(_minWidth, _maxWidth, 'cm')}',
+                    color: const Color(0xFF3B82F6),
+                    onRemove: () => setState(() {
+                      _minWidth = null;
+                      _maxWidth = null;
+                      _currentPage = 0;
+                    }),
+                    onTap: () => _showWidthFilterDialog(context, allSpots),
+                  ),
+                if (isDepthFiltered)
+                  _buildFilterBadge(
+                    icon: Icons.vertical_align_bottom,
+                    label:
+                        'Kedalaman: ${_formatRangeText(_minDepth, _maxDepth, depthUnit)}',
+                    color: const Color(0xFFF59E0B),
+                    onRemove: () => setState(() {
+                      _minDepth = null;
+                      _maxDepth = null;
+                      _currentPage = 0;
+                    }),
+                    onTap: () => _showDepthFilterDialog(
+                        context, allSpots, isCrumbling, config),
+                  ),
+                if (query.isNotEmpty)
+                  _buildFilterBadge(
+                    icon: Icons.search,
+                    label: '"$query"',
+                    color: AppColors.textAccent,
+                    onRemove: () => setState(() {
+                      _tableSearchController.clear();
+                      _currentPage = 0;
+                    }),
+                  ),
+                TextButton.icon(
+                  onPressed: _resetAllFilters,
+                  icon: const Icon(Icons.clear_all,
+                      size: 14, color: AppColors.statusError),
+                  label: const Text(
+                    'Hapus Semua',
+                    style: TextStyle(fontSize: 11, color: AppColors.statusError),
+                  ),
+                  style: TextButton.styleFrom(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilterBadge({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onRemove,
+    VoidCallback? onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: color.withValues(alpha: 0.45)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: color),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
+            ),
+            const SizedBox(width: 5),
+            InkWell(
+              onTap: onRemove,
+              borderRadius: BorderRadius.circular(10),
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(Icons.close, size: 12, color: color),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- Filter Dialog Handlers ---
+
+  double? _getSpotWidth(Spot s) {
+    if (s.trenchWidthCm != null) return s.trenchWidthCm;
+    final rawW = s.rawProperties['trench_width_cm'] ??
+        s.rawProperties['width'] ??
+        s.rawProperties['lebar'];
+    if (rawW is num) return rawW.toDouble();
+    return null;
+  }
+
+  double? _getSpotDepth(Spot s, bool isCrumbling) {
+    if (isCrumbling) {
+      return s.avgDepthCm ?? s.depth;
+    } else {
+      return s.depth;
+    }
+  }
+
+  void _resetAllFilters() {
+    setState(() {
+      _selectedSingleDate = null;
+      _selectedDateRange = null;
+      _minWidth = null;
+      _maxWidth = null;
+      _minDepth = null;
+      _maxDepth = null;
+      _tableSearchController.clear();
+      _currentPage = 0;
+    });
+  }
+
+  String _formatRangeText(double? min, double? max, String unit) {
+    if (min != null && max != null) {
+      return '${min.toStringAsFixed(1)} - ${max.toStringAsFixed(1)} $unit';
+    } else if (min != null) {
+      return '≥ ${min.toStringAsFixed(1)} $unit';
+    } else if (max != null) {
+      return '≤ ${max.toStringAsFixed(1)} $unit';
+    }
+    return 'Semua';
+  }
+
+  Future<void> _showDateFilterDialog(
+      BuildContext context, List<Spot> spots) async {
+    DateTime minDate = DateTime(2020, 1, 1);
+    DateTime maxDate = DateTime.now().add(const Duration(days: 365));
+    final List<DateTime> uniqueDays = [];
+    final Set<String> seenDays = {};
+
+    for (final s in spots) {
+      final d = s.completedAt ?? s.timestamp ?? s.createdAt;
+      if (d != null) {
+        final local = d.toLocal();
+        final dayStr = DateFormat('yyyy-MM-dd').format(local);
+        if (!seenDays.contains(dayStr)) {
+          seenDays.add(dayStr);
+          uniqueDays.add(DateTime(local.year, local.month, local.day));
+        }
+      }
+    }
+
+    uniqueDays.sort((a, b) => b.compareTo(a));
+
+    if (uniqueDays.isNotEmpty) {
+      minDate = uniqueDays.last.subtract(const Duration(days: 7));
+      maxDate = uniqueDays.first.add(const Duration(days: 7));
+    }
+
+    DateTime safeMin = minDate;
+    DateTime safeMax = maxDate;
+    if (!safeMax.isAfter(safeMin)) {
+      safeMax = safeMin.add(const Duration(days: 7));
+    }
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceElevated,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: const BorderSide(color: AppColors.border),
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.calendar_month, color: AppColors.accentCyan, size: 22),
+            SizedBox(width: 10),
+            Text('Filter Tanggal Pekerjaan', style: TextStyle(fontSize: 16)),
+          ],
+        ),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Pilih metode filter tanggal untuk menampilkan segmen / titik:',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 16),
+              // Option 1: Single Date Button
+              _buildDateOptionTile(
+                icon: Icons.calendar_today,
+                title: 'Pilih Satu Tanggal (Single Date)',
+                subtitle: _selectedSingleDate != null
+                    ? 'Terpilih: ${DateFormat('dd MMMM yyyy').format(_selectedSingleDate!)}'
+                    : 'Pilih satu hari spesifik dari kalender',
+                isSelected: _selectedSingleDate != null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openSingleDatePicker(context, safeMin, safeMax);
+                },
+              ),
+              const SizedBox(height: 10),
+              // Option 2: Date Range Button
+              _buildDateOptionTile(
+                icon: Icons.date_range,
+                title: 'Pilih Rentang Tanggal (Date Range)',
+                subtitle: _selectedDateRange != null
+                    ? 'Terpilih: ${DateFormat('dd MMM').format(_selectedDateRange!.start)} s/d ${DateFormat('dd MMM yyyy').format(_selectedDateRange!.end)}'
+                    : 'Pilih rentang tanggal awal s/d akhir',
+                isSelected: _selectedDateRange != null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openDateRangePicker(context, safeMin, safeMax);
+                },
+              ),
+              if (uniqueDays.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                const Divider(color: AppColors.border),
+                const SizedBox(height: 10),
+                const Text(
+                  'PILIHAN CEPAT DARI DATASET:',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: uniqueDays.take(8).map((day) {
+                    final isCur = _selectedSingleDate != null &&
+                        _selectedSingleDate!.year == day.year &&
+                        _selectedSingleDate!.month == day.month &&
+                        _selectedSingleDate!.day == day.day;
+                    return ActionChip(
+                      backgroundColor: isCur
+                          ? AppColors.accentCyan.withValues(alpha: 0.25)
+                          : AppColors.surfaceCard,
+                      side: BorderSide(
+                        color: isCur ? AppColors.accentCyan : AppColors.border,
+                      ),
+                      label: Text(
+                        DateFormat('dd MMM yyyy').format(day),
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: isCur ? FontWeight.bold : FontWeight.normal,
+                          color: isCur ? AppColors.accentCyan : AppColors.textPrimary,
+                        ),
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _selectedSingleDate = day;
+                          _selectedDateRange = null;
+                          _currentPage = 0;
+                        });
+                        Navigator.pop(ctx);
+                      },
+                    );
+                  }).toList(),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          if (_selectedSingleDate != null || _selectedDateRange != null)
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  _selectedSingleDate = null;
+                  _selectedDateRange = null;
+                  _currentPage = 0;
+                });
+                Navigator.pop(ctx);
+              },
+              child: const Text('Reset Tanggal',
+                  style: TextStyle(color: AppColors.statusError)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Tutup',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDateOptionTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColors.accentCyan.withValues(alpha: 0.12)
+              : AppColors.surfaceCard,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? AppColors.accentCyan : AppColors.border,
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? AppColors.accentCyan.withValues(alpha: 0.2)
+                    : AppColors.surfaceElevated,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                icon,
+                size: 20,
+                color: isSelected ? AppColors.accentCyan : AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color:
+                          isSelected ? AppColors.accentCyan : AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isSelected
+                          ? AppColors.textPrimary.withValues(alpha: 0.8)
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, size: 18, color: AppColors.textMuted),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSingleDatePicker(
+      BuildContext context, DateTime minDate, DateTime maxDate) async {
+    final now = DateTime.now();
+    DateTime initial = _selectedSingleDate ??
+        (_selectedDateRange?.start ??
+            (now.isAfter(minDate) && now.isBefore(maxDate) ? now : maxDate));
+    if (initial.isBefore(minDate)) initial = minDate;
+    if (initial.isAfter(maxDate)) initial = maxDate;
+
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: minDate,
+      lastDate: maxDate,
+      helpText: 'PILIH TANGGAL SPESIFIK (SINGLE DATE)',
+      cancelText: 'BATAL',
+      confirmText: 'PILIH',
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: AppColors.accentCyan,
+              onPrimary: Color(0xFF0B1017),
+              surface: AppColors.surfaceElevated,
+              onSurface: AppColors.textPrimary,
+            ),
+            dialogTheme: const DialogThemeData(backgroundColor: AppColors.surfaceElevated),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      setState(() {
+        _selectedSingleDate = picked;
+        _selectedDateRange = null;
+        _currentPage = 0;
+      });
+    }
+  }
+
+  Future<void> _openDateRangePicker(
+      BuildContext context, DateTime minDate, DateTime maxDate) async {
+    final initialRange = _selectedDateRange ??
+        DateTimeRange(
+          start: minDate,
+          end: maxDate,
+        );
+
+    final picked = await showDateRangePicker(
+      context: context,
+      initialDateRange: initialRange,
+      firstDate: minDate,
+      lastDate: maxDate,
+      helpText: 'PILIH RENTANG TANGGAL (DATE RANGE)',
+      cancelText: 'BATAL',
+      confirmText: 'PILIH RENTANG',
+      saveText: 'PILIH RENTANG',
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: AppColors.accentCyan,
+              onPrimary: Color(0xFF0B1017),
+              surface: AppColors.surfaceElevated,
+              onSurface: AppColors.textPrimary,
+            ),
+            dialogTheme: const DialogThemeData(backgroundColor: AppColors.surfaceElevated),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      setState(() {
+        _selectedDateRange = picked;
+        _selectedSingleDate = null;
+        _currentPage = 0;
+      });
+    }
+  }
+
+  Future<void> _showWidthFilterDialog(
+      BuildContext context, List<Spot> spots) async {
+    double? minW;
+    double? maxW;
+    for (final s in spots) {
+      final w = _getSpotWidth(s);
+      if (w != null) {
+        if (minW == null || w < minW) minW = w;
+        if (maxW == null || w > maxW) maxW = w;
+      }
+    }
+
+    final dataMin = minW ?? 60.0;
+    double dataMax = maxW ?? 160.0;
+    if (dataMax <= dataMin) dataMax = dataMin + 20.0;
+
+    final config = ref.read(configProvider);
+    final maxWidthStd = config.maxTrenchWidthCm;
+
+    final presets = [
+      const _RangePreset(label: 'Semua Lebar', min: null, max: null),
+      _RangePreset(
+        label: '≤ Standar (${maxWidthStd.toInt()} cm)',
+        min: null,
+        max: maxWidthStd,
+      ),
+      _RangePreset(
+        label: 'Overwidth (> ${maxWidthStd.toInt()} cm)',
+        min: maxWidthStd,
+        max: null,
+      ),
+      const _RangePreset(label: '80 - 100 cm', min: 80, max: 100),
+      const _RangePreset(label: '100 - 120 cm', min: 100, max: 120),
+    ];
+
+    final result = await showDialog<_RangeResult>(
+      context: context,
+      builder: (ctx) => _RangeFilterDialog(
+        title: 'Filter Rentang Lebar Parit (Trench Width)',
+        icon: Icons.straighten,
+        themeColor: const Color(0xFF3B82F6),
+        unit: 'cm',
+        initialMin: _minWidth,
+        initialMax: _maxWidth,
+        dataMin: dataMin,
+        dataMax: dataMax,
+        presets: presets,
+      ),
+    );
+
+    if (result != null) {
+      setState(() {
+        _minWidth = result.min;
+        _maxWidth = result.max;
+        _currentPage = 0;
+      });
+    }
+  }
+
+  Future<void> _showDepthFilterDialog(BuildContext context, List<Spot> spots,
+      bool isCrumbling, SpotConfig config) async {
+    double? minD;
+    double? maxD;
+    for (final s in spots) {
+      final d = _getSpotDepth(s, isCrumbling);
+      if (d != null) {
+        if (minD == null || d < minD) minD = d;
+        if (maxD == null || d > maxD) maxD = d;
+      }
+    }
+
+    final unit = isCrumbling ? 'cm' : 'm';
+    final dataMin = minD ?? (isCrumbling ? 40.0 : 0.0);
+    double dataMax = maxD ?? (isCrumbling ? 120.0 : 2.0);
+    if (dataMax <= dataMin) dataMax = dataMin + (isCrumbling ? 20.0 : 1.0);
+
+    List<_RangePreset> presets;
+    if (isCrumbling) {
+      final target = config.targetDepthCm;
+      final tol = config.depthTolerancePercent;
+      final idealMin = target * (1.0 - (tol / 100.0));
+      final idealMax = target * (1.0 + (tol / 100.0));
+
+      presets = [
+        const _RangePreset(label: 'Semua Kedalaman', min: null, max: null),
+        _RangePreset(
+          label:
+              '🟢 Ideal QC (${idealMin.toStringAsFixed(0)} - ${idealMax.toStringAsFixed(0)} cm)',
+          min: idealMin,
+          max: idealMax,
+        ),
+        _RangePreset(
+          label: '🟡 Dangkal (< ${idealMin.toStringAsFixed(0)} cm)',
+          min: null,
+          max: idealMin,
+        ),
+        _RangePreset(
+          label: '🔴 Dalam (> ${idealMax.toStringAsFixed(0)} cm)',
+          min: idealMax,
+          max: null,
+        ),
+      ];
+    } else {
+      presets = [
+        const _RangePreset(label: 'Semua Kedalaman', min: null, max: null),
+        const _RangePreset(label: '< 0.5 m', min: null, max: 0.5),
+        const _RangePreset(label: '0.5 - 1.0 m', min: 0.5, max: 1.0),
+        const _RangePreset(label: '> 1.0 m', min: 1.0, max: null),
+      ];
+    }
+
+    final result = await showDialog<_RangeResult>(
+      context: context,
+      builder: (ctx) => _RangeFilterDialog(
+        title: isCrumbling
+            ? 'Filter Rentang Kedalaman Crumbling'
+            : 'Filter Rentang Kedalaman Spot Galian',
+        icon: Icons.vertical_align_bottom,
+        themeColor: const Color(0xFFF59E0B),
+        unit: unit,
+        initialMin: _minDepth,
+        initialMax: _maxDepth,
+        dataMin: dataMin,
+        dataMax: dataMax,
+        presets: presets,
+      ),
+    );
+
+    if (result != null) {
+      setState(() {
+        _minDepth = result.min;
+        _maxDepth = result.max;
+        _currentPage = 0;
+      });
+    }
+  }
+
   Widget _buildTableQCBadge(CrumblingQCStatus qc) {
     switch (qc) {
       case CrumblingQCStatus.idealPass:
@@ -916,5 +1835,363 @@ class _ConfigPageState extends ConsumerState<ConfigPage> {
       case CrumblingQCStatus.pending:
         return const StatusBadge(label: '⚪ Pending', color: Color(0xFF64748B));
     }
+  }
+}
+
+// --- Reusable Range Filter Dialog ---
+
+class _RangeResult {
+  final double? min;
+  final double? max;
+
+  const _RangeResult(this.min, this.max);
+}
+
+class _RangePreset {
+  final String label;
+  final double? min;
+  final double? max;
+
+  const _RangePreset({
+    required this.label,
+    this.min,
+    this.max,
+  });
+}
+
+class _RangeFilterDialog extends StatefulWidget {
+  final String title;
+  final IconData icon;
+  final Color themeColor;
+  final String unit;
+  final double? initialMin;
+  final double? initialMax;
+  final double dataMin;
+  final double dataMax;
+  final List<_RangePreset> presets;
+
+  const _RangeFilterDialog({
+    required this.title,
+    required this.icon,
+    required this.themeColor,
+    required this.unit,
+    this.initialMin,
+    this.initialMax,
+    required this.dataMin,
+    required this.dataMax,
+    required this.presets,
+  });
+
+  @override
+  State<_RangeFilterDialog> createState() => _RangeFilterDialogState();
+}
+
+class _RangeFilterDialogState extends State<_RangeFilterDialog> {
+  late double _sliderMin;
+  late double _sliderMax;
+  late RangeValues _currentRange;
+  late TextEditingController _minController;
+  late TextEditingController _maxController;
+
+  @override
+  void initState() {
+    super.initState();
+    _sliderMin = (widget.dataMin * 0.95).floorToDouble();
+    if (_sliderMin < 0) _sliderMin = 0.0;
+    _sliderMax = (widget.dataMax * 1.05).ceilToDouble();
+    if (_sliderMax <= _sliderMin) {
+      _sliderMax = _sliderMin + (widget.unit == 'm' ? 1.0 : 10.0);
+    }
+
+    final initStart =
+        (widget.initialMin ?? _sliderMin).clamp(_sliderMin, _sliderMax);
+    final initEnd =
+        (widget.initialMax ?? _sliderMax).clamp(_sliderMin, _sliderMax);
+    _currentRange = RangeValues(
+      initStart <= initEnd ? initStart : _sliderMin,
+      initEnd >= initStart ? initEnd : _sliderMax,
+    );
+
+    _minController = TextEditingController(
+      text: widget.initialMin != null
+          ? widget.initialMin!.toStringAsFixed(1)
+          : '',
+    );
+    _maxController = TextEditingController(
+      text: widget.initialMax != null
+          ? widget.initialMax!.toStringAsFixed(1)
+          : '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _minController.dispose();
+    _maxController.dispose();
+    super.dispose();
+  }
+
+  void _applyPreset(_RangePreset preset) {
+    setState(() {
+      if (preset.min == null && preset.max == null) {
+        _minController.clear();
+        _maxController.clear();
+        _currentRange = RangeValues(_sliderMin, _sliderMax);
+      } else {
+        _minController.text =
+            preset.min != null ? preset.min!.toStringAsFixed(1) : '';
+        _maxController.text =
+            preset.max != null ? preset.max!.toStringAsFixed(1) : '';
+        final s = (preset.min ?? _sliderMin).clamp(_sliderMin, _sliderMax);
+        final e = (preset.max ?? _sliderMax).clamp(_sliderMin, _sliderMax);
+        _currentRange =
+            RangeValues(s <= e ? s : _sliderMin, e >= s ? e : _sliderMax);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.surfaceElevated,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Icon(widget.icon, color: widget.themeColor, size: 22),
+              const SizedBox(width: 10),
+              Text(
+                widget.title,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 480,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Data Bounds Info
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: widget.themeColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: widget.themeColor.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 16, color: widget.themeColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Rentang data aktual: ${widget.dataMin.toStringAsFixed(1)} s/d ${widget.dataMax.toStringAsFixed(1)} ${widget.unit}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: widget.themeColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Presets
+              if (widget.presets.isNotEmpty) ...[
+                const Text(
+                  'PRESET PILIHAN CEPAT:',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: widget.presets.map((p) {
+                    final isSelected = (p.min == null
+                            ? _minController.text.isEmpty
+                            : double.tryParse(_minController.text) == p.min) &&
+                        (p.max == null
+                            ? _maxController.text.isEmpty
+                            : double.tryParse(_maxController.text) == p.max);
+                    return ActionChip(
+                      backgroundColor: isSelected
+                          ? widget.themeColor.withValues(alpha: 0.25)
+                          : AppColors.surfaceCard,
+                      side: BorderSide(
+                        color:
+                            isSelected ? widget.themeColor : AppColors.border,
+                      ),
+                      label: Text(
+                        p.label,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight:
+                              isSelected ? FontWeight.bold : FontWeight.normal,
+                          color: isSelected
+                              ? widget.themeColor
+                              : AppColors.textPrimary,
+                        ),
+                      ),
+                      onPressed: () => _applyPreset(p),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 20),
+              ],
+
+              // Slider
+              const Text(
+                'GESER RENTANG NILAI:',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textMuted,
+                ),
+              ),
+              const SizedBox(height: 4),
+              RangeSlider(
+                values: _currentRange,
+                min: _sliderMin,
+                max: _sliderMax,
+                divisions: ((_sliderMax - _sliderMin) *
+                        (widget.unit == 'm' ? 20 : 2))
+                    .toInt()
+                    .clamp(10, 100),
+                activeColor: widget.themeColor,
+                inactiveColor: AppColors.border,
+                labels: RangeLabels(
+                  '${_currentRange.start.toStringAsFixed(1)} ${widget.unit}',
+                  '${_currentRange.end.toStringAsFixed(1)} ${widget.unit}',
+                ),
+                onChanged: (values) {
+                  setState(() {
+                    _currentRange = values;
+                    _minController.text = values.start.toStringAsFixed(1);
+                    _maxController.text = values.end.toStringAsFixed(1);
+                  });
+                },
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '${_sliderMin.toStringAsFixed(1)} ${widget.unit}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.textMuted),
+                  ),
+                  Text(
+                    '${_sliderMax.toStringAsFixed(1)} ${widget.unit}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.textMuted),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+
+              // Min and Max Inputs
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _minController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      decoration: InputDecoration(
+                        labelText: 'Batas Bawah (Min)',
+                        suffixText: widget.unit,
+                        hintText: _sliderMin.toStringAsFixed(1),
+                      ),
+                      onChanged: (val) {
+                        final parsed = double.tryParse(val);
+                        if (parsed != null) {
+                          setState(() {
+                            final s = parsed.clamp(_sliderMin, _sliderMax);
+                            final e = _currentRange.end >= s
+                                ? _currentRange.end
+                                : _sliderMax;
+                            _currentRange = RangeValues(s, e);
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: TextField(
+                      controller: _maxController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      decoration: InputDecoration(
+                        labelText: 'Batas Atas (Max)',
+                        suffixText: widget.unit,
+                        hintText: _sliderMax.toStringAsFixed(1),
+                      ),
+                      onChanged: (val) {
+                        final parsed = double.tryParse(val);
+                        if (parsed != null) {
+                          setState(() {
+                            final e = parsed.clamp(_sliderMin, _sliderMax);
+                            final s = _currentRange.start <= e
+                                ? _currentRange.start
+                                : _sliderMin;
+                            _currentRange = RangeValues(s, e);
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () =>
+              Navigator.pop(context, const _RangeResult(null, null)),
+          child: const Text('Reset Filter',
+              style: TextStyle(color: AppColors.statusError)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal',
+              style: TextStyle(color: AppColors.textSecondary)),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: widget.themeColor,
+            foregroundColor: const Color(0xFF0B1017),
+          ),
+          onPressed: () {
+            final minVal = double.tryParse(_minController.text);
+            final maxVal = double.tryParse(_maxController.text);
+            Navigator.pop(context, _RangeResult(minVal, maxVal));
+          },
+          icon: const Icon(Icons.check, size: 16),
+          label: const Text('Terapkan Filter'),
+        ),
+      ],
+    );
   }
 }
