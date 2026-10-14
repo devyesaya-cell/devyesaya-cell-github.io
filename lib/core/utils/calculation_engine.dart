@@ -1,6 +1,15 @@
+import 'dart:math';
 import '../models/config_model.dart';
 import '../models/spot_model.dart';
 import '../models/summary_model.dart';
+
+class _IntervalStats {
+  final double min;
+  final double max;
+  final double avg;
+
+  const _IntervalStats({this.min = 0.0, this.max = 0.0, this.avg = 0.0});
+}
 
 class CalculationEngine {
   static SpotSummary calculate({
@@ -145,6 +154,13 @@ class CalculationEngine {
         ? (activeHours * 3600.0 / doneCount)
         : 0.0;
 
+    // Perhitungan jarak waktu operasional antar spot (Cycle Time: Min, Max, Avg)
+    final globalIntervalStats = _calculateIntervalStats(
+      doneSpotsWithTime,
+      config.idleGapMinutes,
+      groupByOperator: true,
+    );
+
     // Daily breakdown
     final sortedDates = spotsByDate.keys.toList()..sort();
     final List<DailyProductivity> dailyBreakdown = [];
@@ -152,6 +168,7 @@ class CalculationEngine {
       final daySpots = spotsByDate[date]!;
       daySpots.sort((a, b) => a.timestamp!.compareTo(b.timestamp!));
       final dayActiveHours = _calculateActiveHours(daySpots, config.idleGapMinutes);
+      final dayIntervalStats = _calculateIntervalStats(daySpots, config.idleGapMinutes);
 
       double dayMeters = 0.0;
       double dayAreaM2 = 0.0;
@@ -180,6 +197,9 @@ class CalculationEngine {
       final dayAreaHa = dayAreaM2 / 10000.0;
       final daySpeedSpots = dayActiveHours > 0 ? (daySpots.length / dayActiveHours) : 0.0;
       final daySpeedMeters = dayActiveHours > 0 ? (dayMeters / dayActiveHours) : 0.0;
+      final dayAvgSeconds = dayIntervalStats.avg > 0
+          ? dayIntervalStats.avg
+          : (dayActiveHours > 0 && daySpots.isNotEmpty ? (dayActiveHours * 3600.0 / daySpots.length) : 0.0);
 
       dailyBreakdown.add(DailyProductivity(
         date: date,
@@ -191,6 +211,9 @@ class CalculationEngine {
         metersPerHour: daySpeedMeters,
         avgDepthCm: dayDepthCount > 0 ? dayDepthSum / dayDepthCount : null,
         avgDeviationCm: dayDevCount > 0 ? dayDevSum / dayDevCount : null,
+        minSecondsPerSpot: dayIntervalStats.min,
+        maxSecondsPerSpot: dayIntervalStats.max,
+        avgSecondsPerSpot: dayAvgSeconds,
       ));
     }
 
@@ -201,6 +224,7 @@ class CalculationEngine {
       final opSpots = spotsByOperator[op]!;
       opSpots.sort((a, b) => a.timestamp!.compareTo(b.timestamp!));
       final opActiveHours = _calculateActiveHours(opSpots, config.idleGapMinutes);
+      final opIntervalStats = _calculateIntervalStats(opSpots, config.idleGapMinutes);
 
       double opMeters = 0.0;
       double opAreaM2 = 0.0;
@@ -214,6 +238,9 @@ class CalculationEngine {
       final opAreaHa = opAreaM2 / 10000.0;
       final opSpeedSpots = opActiveHours > 0 ? (opSpots.length / opActiveHours) : 0.0;
       final opSpeedMeters = opActiveHours > 0 ? (opMeters / opActiveHours) : 0.0;
+      final opAvgSeconds = opIntervalStats.avg > 0
+          ? opIntervalStats.avg
+          : (opActiveHours > 0 && opSpots.isNotEmpty ? (opActiveHours * 3600.0 / opSpots.length) : 0.0);
 
       operatorBreakdown.add(OperatorProductivity(
         operatorId: op,
@@ -223,6 +250,9 @@ class CalculationEngine {
         spotsPerHour: opSpeedSpots,
         metersDone: opMeters,
         metersPerHour: opSpeedMeters,
+        minSecondsPerSpot: opIntervalStats.min,
+        maxSecondsPerSpot: opIntervalStats.max,
+        avgSecondsPerSpot: opAvgSeconds,
       ));
     }
 
@@ -250,6 +280,8 @@ class CalculationEngine {
       speedSpotsPerHour: speedSpotsPerHour,
       speedHaPerHour: speedHaPerHour,
       avgSecondsPerSpot: avgSecondsPerSpot,
+      minSecondsPerSpot: globalIntervalStats.min,
+      maxSecondsPerSpot: globalIntervalStats.max,
       minTimestamp: minTime,
       maxTimestamp: maxTime,
       dailyBreakdown: dailyBreakdown,
@@ -258,6 +290,65 @@ class CalculationEngine {
       averageAccuracy: accuracyCount > 0 ? accuracySum / accuracyCount : 0.0,
       averageDepth: depthCount > 0 ? depthSum / depthCount : 0.0,
     );
+  }
+
+  static _IntervalStats _calculateIntervalStats(
+    List<Spot> spots,
+    int idleGapMinutes, {
+    bool groupByOperator = false,
+  }) {
+    if (spots.length < 2) {
+      return const _IntervalStats();
+    }
+
+    final gapThresholdMs = idleGapMinutes * 60 * 1000;
+    final List<double> operationalIntervals = [];
+
+    if (groupByOperator) {
+      final Map<String, List<Spot>> unitGroups = {};
+      for (final s in spots) {
+        final key = s.operatorId?.isNotEmpty == true
+            ? s.operatorId!
+            : (s.equipmentId?.isNotEmpty == true ? s.equipmentId! : 'default');
+        unitGroups.putIfAbsent(key, () => []).add(s);
+      }
+
+      for (final group in unitGroups.values) {
+        group.sort((a, b) => a.timestamp!.compareTo(b.timestamp!));
+        for (int i = 1; i < group.length; i++) {
+          final prev = group[i - 1].timestamp;
+          final curr = group[i].timestamp;
+          if (prev == null || curr == null) continue;
+
+          final diffMs = curr.difference(prev).inMilliseconds;
+          if (diffMs > 0 && diffMs <= gapThresholdMs) {
+            operationalIntervals.add(diffMs / 1000.0);
+          }
+        }
+      }
+    } else {
+      final sorted = List<Spot>.from(spots)..sort((a, b) => a.timestamp!.compareTo(b.timestamp!));
+      for (int i = 1; i < sorted.length; i++) {
+        final prev = sorted[i - 1].timestamp;
+        final curr = sorted[i].timestamp;
+        if (prev == null || curr == null) continue;
+
+        final diffMs = curr.difference(prev).inMilliseconds;
+        if (diffMs > 0 && diffMs <= gapThresholdMs) {
+          operationalIntervals.add(diffMs / 1000.0);
+        }
+      }
+    }
+
+    if (operationalIntervals.isEmpty) {
+      return const _IntervalStats();
+    }
+
+    final minVal = operationalIntervals.reduce(min);
+    final maxVal = operationalIntervals.reduce(max);
+    final avgVal = operationalIntervals.reduce((a, b) => a + b) / operationalIntervals.length;
+
+    return _IntervalStats(min: minVal, max: maxVal, avg: avgVal);
   }
 
   static double _calculateActiveHours(List<Spot> sortedSpotsWithTime, int idleGapMinutes) {

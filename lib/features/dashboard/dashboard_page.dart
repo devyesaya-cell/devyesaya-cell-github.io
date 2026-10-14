@@ -272,7 +272,9 @@ class DashboardPage extends ConsumerWidget {
                     : '${summary.speedSpotsPerHour.toStringAsFixed(1)} spot/jam',
                 sublabel: isCrumbling
                     ? '${summary.activeWorkHours.toStringAsFixed(1)} Jam Aktif • ${summary.speedHaPerHour.toStringAsFixed(3)} Ha/jam'
-                    : '${summary.speedHaPerHour.toStringAsFixed(3)} Ha/jam • ${summary.avgSecondsPerSpot.toStringAsFixed(1)} dtk/spot',
+                    : (summary.minSecondsPerSpot > 0
+                        ? '${summary.avgSecondsPerSpot.toStringAsFixed(1)}s (min ${summary.minSecondsPerSpot.toStringAsFixed(0)}s, max ${summary.maxSecondsPerSpot.toStringAsFixed(0)}s) • ${summary.speedHaPerHour.toStringAsFixed(3)} Ha/j'
+                        : '${summary.speedHaPerHour.toStringAsFixed(3)} Ha/jam • ${summary.avgSecondsPerSpot.toStringAsFixed(1)} dtk/spot'),
                 color: AppColors.statusPurple,
               ),
             ],
@@ -582,7 +584,9 @@ class DashboardPage extends ConsumerWidget {
               unit: isCrumbling ? 'cm' : 'spot/jam',
               subtitle: isCrumbling
                   ? 'Rata-rata Lebar Parit: ${summary.avgTrenchWidthCm.toStringAsFixed(1)} cm'
-                  : '${summary.avgSecondsPerSpot.toStringAsFixed(1)} dtk/galian • ${summary.speedHaPerHour.toStringAsFixed(3)} Ha/j',
+                  : (summary.minSecondsPerSpot > 0
+                      ? 'Avg ${summary.avgSecondsPerSpot.toStringAsFixed(1)}s • Min ${summary.minSecondsPerSpot.toStringAsFixed(0)}s • Max ${summary.maxSecondsPerSpot.toStringAsFixed(0)}s'
+                      : '${summary.avgSecondsPerSpot.toStringAsFixed(1)} dtk/galian • ${summary.speedHaPerHour.toStringAsFixed(3)} Ha/j'),
               icon: isCrumbling ? Icons.center_focus_strong : Icons.speed,
               accentColor: isCrumbling
                   ? (summary.avgDeviationCm < 20 ? AppColors.statusDone : AppColors.statusPending)
@@ -1028,6 +1032,106 @@ class DashboardPage extends ConsumerWidget {
                   value: '${summary.avgTrenchWidthCm.toStringAsFixed(1)} cm',
                   icon: Icons.swap_horiz,
                 ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          const Divider(color: AppColors.borderSubtle),
+          const SizedBox(height: 16),
+          // Analisis Interval Waktu Antar Spot (Cycle Time)
+          Row(
+            children: [
+              const Icon(Icons.timer_outlined, color: AppColors.accentCyan, size: 18),
+              const SizedBox(width: 8),
+              Text(
+                isCrumbling
+                    ? 'ANALISIS INTERVAL WAKTU KERJA (CYCLE TIME PER SEGMEN)'
+                    : 'ANALISIS INTERVAL WAKTU ANTAR SPOT (CYCLE TIME OPERASIONAL)',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textSecondary,
+                  letterSpacing: 0.8,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 16,
+            runSpacing: 12,
+            children: [
+              _buildCycleTimeMetric(
+                label: 'Interval Tercepat (Min)',
+                value: '${summary.minSecondsPerSpot.toStringAsFixed(1)} dtk',
+                subtext: 'Kecepatan galian puncak',
+                color: const Color(0xFF2ECC71),
+                icon: Icons.bolt,
+              ),
+              _buildCycleTimeMetric(
+                label: 'Rata-rata Siklus (Avg)',
+                value: '${summary.avgSecondsPerSpot.toStringAsFixed(1)} dtk',
+                subtext: isCrumbling ? 'Rata-rata ritme galian per segmen' : 'Rata-rata waktu pengerjaan per spot',
+                color: AppColors.accentCyan,
+                icon: Icons.av_timer,
+              ),
+              _buildCycleTimeMetric(
+                label: 'Interval Terlama (Max)',
+                value: '${summary.maxSecondsPerSpot.toStringAsFixed(1)} dtk',
+                subtext: 'Jeda operasional maksimal sebelum idle',
+                color: const Color(0xFFF59E0B),
+                icon: Icons.hourglass_top,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCycleTimeMetric({
+    required String label,
+    required String value,
+    required String subtext,
+    required Color color,
+    required IconData icon,
+  }) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 190),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceElevated,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 18, color: color),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(fontSize: 11, color: AppColors.textMuted, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtext,
+                style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
+              ),
             ],
           ),
         ],

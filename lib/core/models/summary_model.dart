@@ -8,6 +8,9 @@ class OperatorProductivity {
   final double spotsPerHour;
   final double metersDone;
   final double metersPerHour;
+  final double minSecondsPerSpot;
+  final double maxSecondsPerSpot;
+  final double avgSecondsPerSpot;
 
   const OperatorProductivity({
     required this.operatorId,
@@ -17,6 +20,9 @@ class OperatorProductivity {
     required this.spotsPerHour,
     this.metersDone = 0.0,
     this.metersPerHour = 0.0,
+    this.minSecondsPerSpot = 0.0,
+    this.maxSecondsPerSpot = 0.0,
+    this.avgSecondsPerSpot = 0.0,
   });
 }
 
@@ -30,6 +36,9 @@ class DailyProductivity {
   final double metersPerHour;
   final double? avgDepthCm;
   final double? avgDeviationCm;
+  final double minSecondsPerSpot;
+  final double maxSecondsPerSpot;
+  final double avgSecondsPerSpot;
 
   const DailyProductivity({
     required this.date,
@@ -41,6 +50,9 @@ class DailyProductivity {
     this.metersPerHour = 0.0,
     this.avgDepthCm,
     this.avgDeviationCm,
+    this.minSecondsPerSpot = 0.0,
+    this.maxSecondsPerSpot = 0.0,
+    this.avgSecondsPerSpot = 0.0,
   });
 }
 
@@ -74,6 +86,8 @@ class SpotSummary {
   final double speedSpotsPerHour; // doneSpots / activeWorkHours
   final double speedHaPerHour; // totalAreaHa / activeWorkHours
   final double avgSecondsPerSpot; // activeWorkHours * 3600 / doneSpots
+  final double minSecondsPerSpot; // Fastest operational interval between spots (seconds)
+  final double maxSecondsPerSpot; // Longest operational interval between spots (seconds)
 
   final DateTime? minTimestamp;
   final DateTime? maxTimestamp;
@@ -109,6 +123,8 @@ class SpotSummary {
     required this.speedSpotsPerHour,
     required this.speedHaPerHour,
     required this.avgSecondsPerSpot,
+    this.minSecondsPerSpot = 0.0,
+    this.maxSecondsPerSpot = 0.0,
     this.minTimestamp,
     this.maxTimestamp,
     required this.dailyBreakdown,
@@ -144,6 +160,8 @@ class SpotSummary {
       speedSpotsPerHour: 0.0,
       speedHaPerHour: 0.0,
       avgSecondsPerSpot: 0.0,
+      minSecondsPerSpot: 0.0,
+      maxSecondsPerSpot: 0.0,
       dailyBreakdown: const [],
       operatorBreakdown: const [],
       equipmentCounts: const {},
